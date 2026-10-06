@@ -17,8 +17,8 @@ const COVER_PLACEHOLDER = 'data:image/svg+xml;charset=UTF-8,' + encodeURICompone
 `);
 
 const DOCLN_ORIGINS = new Set([
-  'https://docln.net',
-  'https://docln.sbs'
+  'https://docln.sbs',
+  'https://docln.net'
 ]);
 
 const state = {
@@ -34,7 +34,9 @@ const state = {
     keys: [],
     hasCloudflare: false,
     hasSession: false
-  }
+  },
+  imageDialogPromptKey: '',
+  pendingImageFile: null
 };
 
 const elements = {
@@ -84,7 +86,17 @@ const elements = {
   progressText: document.querySelector('#progressText'),
   taskSummary: document.querySelector('#taskSummary'),
   taskDownloads: document.querySelector('#taskDownloads'),
-  taskLogs: document.querySelector('#taskLogs')
+  taskLogs: document.querySelector('#taskLogs'),
+  imageDialog: document.querySelector('#imageDialog'),
+  imageDialogForm: document.querySelector('#imageDialogForm'),
+  imageDialogContext: document.querySelector('#imageDialogContext'),
+  imageDialogError: document.querySelector('#imageDialogError'),
+  imageDialogUrl: document.querySelector('#imageDialogUrl'),
+  imageImportInput: document.querySelector('#imageImportInput'),
+  imageImportPreview: document.querySelector('#imageImportPreview'),
+  imageDialogMeta: document.querySelector('#imageDialogMeta'),
+  imageSkipBtn: document.querySelector('#imageSkipBtn'),
+  imageReplaceBtn: document.querySelector('#imageReplaceBtn')
 };
 
 function escapeHtml(value) {
@@ -228,6 +240,7 @@ function formatTaskStateLabel(status) {
   const labels = {
     queued: 'Đang xếp hàng',
     running: 'Đang tải',
+    waiting_image: 'Chờ ảnh',
     completed: 'Hoàn tất',
     failed: 'Thất bại'
   };
@@ -440,6 +453,85 @@ function clearTaskDownloads() {
   elements.taskDownloads.classList.add('hidden');
 }
 
+function renderImageDialog(prompt) {
+  const parts = [];
+  if (prompt.volumeTitle) parts.push(prompt.volumeTitle);
+  if (prompt.chapterTitle) parts.push(prompt.chapterTitle);
+
+  elements.imageDialogContext.textContent = parts.length
+    ? `${parts.join(' · ')} — ${prompt.label}`
+    : prompt.label;
+  elements.imageDialogError.textContent = prompt.error ? `Lỗi: ${prompt.error}` : '';
+  elements.imageDialogUrl.textContent = prompt.imageUrl;
+  elements.imageDialogUrl.href = prompt.imageUrl;
+  elements.imageImportInput.value = '';
+  elements.imageImportPreview.innerHTML = '';
+  elements.imageImportPreview.classList.add('hidden');
+  state.pendingImageFile = null;
+  elements.imageReplaceBtn.disabled = true;
+  elements.imageDialogMeta.textContent = '';
+  elements.imageDialogMeta.classList.remove('ok', 'error');
+}
+
+function maybeShowImageDialog(task) {
+  if (task.status !== 'waiting_image' || !task.imagePrompt) {
+    return;
+  }
+
+  const key = `${task.id}:${task.imagePrompt.imageIndex}:${task.imagePrompt.imageUrl}:${task.updatedAt}`;
+  if (state.imageDialogPromptKey === key && elements.imageDialog?.open) {
+    return;
+  }
+
+  state.imageDialogPromptKey = key;
+  renderImageDialog(task.imagePrompt);
+  if (elements.imageDialog && !elements.imageDialog.open) {
+    elements.imageDialog.showModal();
+  }
+}
+
+async function submitImageResolution(action) {
+  if (!state.currentTaskId) {
+    throw new Error('Không có task đang chạy.');
+  }
+
+  elements.imageDialogMeta.textContent = 'Đang gửi...';
+  elements.imageDialogMeta.classList.remove('ok', 'error');
+  elements.imageSkipBtn.disabled = true;
+  elements.imageReplaceBtn.disabled = true;
+
+  const body = { action };
+  if (action === 'replace') {
+    if (!state.pendingImageFile?.dataBase64) {
+      elements.imageDialogMeta.textContent = 'Hãy chọn ảnh thay thế trước.';
+      elements.imageDialogMeta.classList.add('error');
+      elements.imageSkipBtn.disabled = false;
+      elements.imageReplaceBtn.disabled = true;
+      return;
+    }
+
+    body.fileName = state.pendingImageFile.fileName;
+    body.dataBase64 = state.pendingImageFile.dataBase64;
+  }
+
+  try {
+    const data = await api(`/api/tasks/${state.currentTaskId}/image-resolution`, {
+      method: 'POST',
+      body: JSON.stringify(body)
+    });
+
+    state.imageDialogPromptKey = '';
+    state.pendingImageFile = null;
+    elements.imageDialog?.close();
+    renderTask(data.task);
+  } catch (error) {
+    elements.imageDialogMeta.textContent = error.message;
+    elements.imageDialogMeta.classList.add('error');
+    elements.imageSkipBtn.disabled = false;
+    elements.imageReplaceBtn.disabled = !state.pendingImageFile?.dataBase64;
+  }
+}
+
 function renderTaskDownloads(task) {
   const epubItems = (task.result?.epubItems || []).filter(item => item.url);
 
@@ -608,13 +700,25 @@ function renderTask(task) {
     return;
   }
 
-  clearTaskDownloads();
-
   if (task.status === 'failed') {
+    clearTaskDownloads();
     elements.taskSummary.textContent = `Thất bại: ${task.error || 'Không rõ lỗi'}`;
     elements.taskSummary.classList.add('error-text');
     elements.taskLogs.textContent = (task.logs || []).map(log => `[${log.at}] ${log.message}`).join('\n');
     stopTaskPolling();
+    return;
+  }
+
+  if (task.result?.epubItems?.length) {
+    renderTaskDownloadItems(task);
+  } else {
+    clearTaskDownloads();
+  }
+
+  if (task.status === 'waiting_image') {
+    elements.taskSummary.textContent = `Tạm dừng — chờ ảnh: ${task.imagePrompt?.label || ''}`;
+    elements.taskLogs.textContent = (task.logs || []).map(log => `[${log.at}] ${log.message}`).join('\n');
+    maybeShowImageDialog(task);
     return;
   }
 
@@ -696,7 +800,7 @@ async function saveDoclnCookies() {
 
 async function testDoclnCookies() {
   elements.testCookieBtn.disabled = true;
-  elements.cookieMeta.textContent = 'Đang kiểm tra cookie với docln.net...';
+  elements.cookieMeta.textContent = 'Đang kiểm tra cookie với docln.sbs...';
   elements.cookieMeta.classList.remove('ok', 'error');
 
   try {
@@ -709,7 +813,7 @@ async function testDoclnCookies() {
 }
 
 async function clearDoclnCookies() {
-  const confirmed = window.confirm('Xóa cookie docln.net đã lưu?');
+  const confirmed = window.confirm('Xóa cookie docln.sbs đã lưu?');
   if (!confirmed) return;
 
   const data = await api('/api/docln-cookies', { method: 'DELETE' });
@@ -984,6 +1088,44 @@ function bindEvents() {
   elements.clearCookieBtn?.addEventListener('click', () => {
     clearDoclnCookies().catch(showInlineError);
   });
+
+  elements.imageDialogForm?.addEventListener('submit', event => {
+    event.preventDefault();
+    submitImageResolution('replace').catch(showInlineError);
+  });
+
+  elements.imageSkipBtn?.addEventListener('click', () => {
+    submitImageResolution('skip').catch(showInlineError);
+  });
+
+  elements.imageImportInput?.addEventListener('change', () => {
+    const file = elements.imageImportInput.files?.[0];
+    if (!file) {
+      state.pendingImageFile = null;
+      elements.imageReplaceBtn.disabled = true;
+      elements.imageImportPreview.classList.add('hidden');
+      elements.imageImportPreview.innerHTML = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || '');
+      const base64 = dataUrl.includes(',') ? dataUrl.split(',')[1] : '';
+      state.pendingImageFile = {
+        fileName: file.name,
+        dataBase64: base64
+      };
+      elements.imageImportPreview.innerHTML = `<img src="${dataUrl}" alt="Xem trước">`;
+      elements.imageImportPreview.classList.remove('hidden');
+      elements.imageReplaceBtn.disabled = !base64;
+    };
+    reader.readAsDataURL(file);
+  });
+
+  elements.imageDialog?.addEventListener('cancel', event => {
+    event.preventDefault();
+  });
 }
 
 function showInlineError(error) {
@@ -1012,7 +1154,7 @@ async function bootstrap() {
 
   if (isDoclnSite() && !state.doclnCookies.configured) {
     openCookieDialog();
-    elements.resultsList.innerHTML = '<p class="error-text">Cần cấu hình cookie docln.net. Bấm nút Cookie ở góc trên để dán cookie.</p>';
+    elements.resultsList.innerHTML = '<p class="error-text">Cần cấu hình cookie docln.sbs. Bấm nút Cookie ở góc trên để dán cookie.</p>';
     return;
   }
 

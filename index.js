@@ -11,16 +11,18 @@ const EpubGen = require('epub-gen-memory').default;
 const VALVRARE_ORIGIN = 'https://valvrareteam.net';
 const VALVRARE_DIRECTORY_CACHE_TTL_MS = 10 * 60 * 1000;
 
+const DOCLN_PRIMARY_ORIGIN = 'https://docln.sbs';
+const DOCLN_LEGACY_ORIGIN = 'https://docln.net';
+
 const HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
   Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
   'Accept-Language': 'vi,en-US;q=0.9,en;q=0.8',
-  Referer: 'https://docln.net/'
+  Referer: 'https://docln.sbs/'
 };
 
 const SITE_ORIGINS = [
-  'https://docln.net',
-  'https://docln.sbs',
+  DOCLN_PRIMARY_ORIGIN,
   'https://ln.hako.vn',
   VALVRARE_ORIGIN
 ];
@@ -581,9 +583,21 @@ function scoreNovelMatch(title, query) {
   return score;
 }
 
+function toDoclnPrimaryUrl(url) {
+  try {
+    const parsed = new URL(url);
+    if (parsed.origin === DOCLN_LEGACY_ORIGIN) {
+      return `${DOCLN_PRIMARY_ORIGIN}${parsed.pathname}${parsed.search}${parsed.hash}`;
+    }
+    return url;
+  } catch {
+    return url;
+  }
+}
+
 function buildCandidateUrls(pathOrUrl) {
   if (/^https?:\/\//i.test(pathOrUrl)) {
-    return [pathOrUrl];
+    return [toDoclnPrimaryUrl(pathOrUrl)];
   }
 
   const uniqueOrigins = [activeOrigin, ...SITE_ORIGINS.filter(origin => origin !== activeOrigin)];
@@ -960,22 +974,166 @@ function isBannerImage(classAttr) {
   return classAttr.split(/\s+/).some(function (token) { return BANNER_IMAGE_CLASS_TOKENS.has(token); });
 }
 
-async function downloadImageToFile(imageUrl, destPath) {
+function formatImageLabel(index, imageUrl, alt = '') {
+  const altLabel = String(alt || '').trim();
+  if (altLabel) return `#${index} (${altLabel})`;
+
   try {
-    const response = await httpClient.get(imageUrl, {
-      responseType: 'arraybuffer',
-      timeout: 15000,
-      headers: buildRequestHeaders(imageUrl)
-    });
-    const buffer = Buffer.from(response.data);
-    if (buffer.length < 100) return null;
-    const ext = guessImageExtension(buffer);
-    const finalPath = destPath + ext;
-    await fs.writeFile(finalPath, buffer);
-    return finalPath;
+    const fileName = path.basename(new URL(imageUrl).pathname);
+    if (fileName) return `#${index} (${fileName})`;
   } catch {
-    return null;
+    // ignore invalid URL
   }
+
+  return `#${index}`;
+}
+
+const EPUB_CHAPTER_CSS = [
+  'body { margin: 0; padding: 0; }',
+  '.galley-rw { margin: 0; padding: 0; }',
+  '.body-rw { margin: 0; padding: 0; }',
+  '.image_full { margin: 0; padding: 0; text-align: center; }',
+  '.image_full img { display: block; width: 100%; max-width: 100%; height: auto; margin: 0 auto; }'
+].join('\n');
+
+function escapeHtmlAttr(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;');
+}
+
+function slugifySectionId(value, fallback = 'section') {
+  const slug = String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+
+  return slug || fallback;
+}
+
+function hasMeaningfulHtml(html) {
+  if (!html || !String(html).trim()) return false;
+
+  const $ = cheerio.load(html, null, false);
+  if (normalizeWhitespace($.text()).length > 0) return true;
+  return $('img, svg, video').length > 0;
+}
+
+function buildImageChapterContent(alt, filePath) {
+  const src = 'file:///' + filePath.replace(/\\/g, '/');
+  const safeAlt = escapeHtmlAttr(alt || 'Image');
+
+  return `<div class="image_full"><img alt="${safeAlt}" src="${src}"/></div>`;
+}
+
+function buildTextChapterContent(html) {
+  return `<div class="galley-rw">
+<section class="body-rw Chapter-rw" epub:type="bodymatter chapter">
+${html}
+</section>
+</div>`;
+}
+
+function buildSegmentsFromMarkedHtml(html, embeddedRecords) {
+  const segments = [];
+  const markerPattern = /<!--EPUB_IMG_(\d+)-->/g;
+  let lastIndex = 0;
+  let match;
+
+  while ((match = markerPattern.exec(html))) {
+    const textPart = html.slice(lastIndex, match.index);
+    if (hasMeaningfulHtml(textPart)) {
+      segments.push({ type: 'text', html: textPart.trim() });
+    }
+
+    const record = embeddedRecords.get(Number(match[1]));
+    if (record) {
+      segments.push({ type: 'image', ...record });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  const tail = html.slice(lastIndex);
+  if (hasMeaningfulHtml(tail)) {
+    segments.push({ type: 'text', html: tail.trim() });
+  }
+
+  return segments;
+}
+
+function markEmbeddedImage($doc, img, index, record, embeddedRecords) {
+  embeddedRecords.set(index, record);
+  $doc(img).replaceWith(`<!--EPUB_IMG_${index}-->`);
+}
+
+function pushEpubSegmentsFromChapter(epubChapters, segments, meta) {
+  const baseTitle = `${meta.volumeTitle} - ${meta.chapterTitle}`;
+  let tocEntryAdded = false;
+  let chapterTitleShown = false;
+
+  for (const segment of segments) {
+    const isFirstTocEntry = !tocEntryAdded;
+    if (isFirstTocEntry) {
+      tocEntryAdded = true;
+    }
+
+    if (segment.type === 'image') {
+      epubChapters.push({
+        title: baseTitle,
+        author: [],
+        content: buildImageChapterContent(segment.alt, segment.filePath),
+        excludeFromToc: !isFirstTocEntry,
+        prependChapterTitles: false
+      });
+      continue;
+    }
+
+    const showChapterTitle = !chapterTitleShown;
+    if (showChapterTitle) {
+      chapterTitleShown = true;
+    }
+
+    epubChapters.push({
+      title: baseTitle,
+      author: showChapterTitle ? meta.author : [],
+      content: buildTextChapterContent(segment.html),
+      excludeFromToc: !isFirstTocEntry,
+      prependChapterTitles: showChapterTitle
+    });
+  }
+}
+
+async function downloadImageToFile(imageUrl, destPath) {
+  const headers = buildRequestHeaders(imageUrl);
+  const requestOptions = {
+    responseType: 'arraybuffer',
+    timeout: 45000,
+    headers,
+    maxRedirects: 10
+  };
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await httpClient.get(imageUrl, requestOptions);
+      const buffer = Buffer.from(response.data);
+      if (buffer.length < 100) return null;
+      const ext = guessImageExtension(buffer);
+      const finalPath = destPath + ext;
+      await fs.writeFile(finalPath, buffer);
+      return finalPath;
+    } catch (error) {
+      if (attempt === 0) {
+        await delay(1500);
+        continue;
+      }
+    }
+  }
+
+  return null;
 }
 
 async function embedImagesInHtml(contentHtml, pageUrl, tempDir) {
@@ -990,34 +1148,47 @@ async function embedImagesInHtml(contentHtml, pageUrl, tempDir) {
   const images = $doc('img').toArray();
   let embedded = 0;
   let failed = 0;
+  const embeddedRecords = new Map();
 
   await fs.ensureDir(tempDir);
 
   for (let i = 0; i < images.length; i++) {
     const img = images[i];
+    const alt = $doc(img).attr('alt') || '';
     const src = $doc(img).attr('src') || $doc(img).attr('data-src') || '';
     const imageUrl = normalizeUrl(src, pageUrl);
-    if (!imageUrl || imageUrl.startsWith('data:') || imageUrl.startsWith('file:')) continue;
+    const label = formatImageLabel(i, imageUrl || src, alt);
+
+    if (!imageUrl || imageUrl.startsWith('data:') || imageUrl.startsWith('file:')) {
+      failed += 1;
+      $doc(img).remove();
+      process.stdout.write(`\n  [anh] bo qua ${label}: khong co URL hop le`);
+      continue;
+    }
 
     const baseName = 'img_' + Date.now() + '_' + i;
     const savedPath = await downloadImageToFile(imageUrl, path.join(tempDir, baseName));
     if (savedPath) {
-      const fileUrl = 'file:///' + savedPath.replace(/\\/g, '/');
-      $doc(img).attr('src', fileUrl);
-      $doc(img).removeAttr('data-src');
+      markEmbeddedImage($doc, img, i, {
+        filePath: savedPath,
+        alt,
+        label
+      }, embeddedRecords);
       embedded += 1;
     } else {
       failed += 1;
+      $doc(img).remove();
+      process.stdout.write(`\n  [anh] loi ${label}: ${imageUrl}`);
     }
   }
 
   if (embedded > 0 || failed > 0) {
-    process.stdout.write(' [' + embedded + ' ảnh');
-    if (failed > 0) process.stdout.write(', lỗi ' + failed);
+    process.stdout.write(' [' + embedded + ' anh');
+    if (failed > 0) process.stdout.write(', loi ' + failed);
     process.stdout.write(']');
   }
 
-  return $doc.html();
+  return buildSegmentsFromMarkedHtml($doc.html(), embeddedRecords);
 }
 
 async function cleanupTempImages(tempDir) {
@@ -1054,6 +1225,9 @@ async function generateEpub(epubPath, title, author, coverUrl, chapters) {
     author,
     publisher: 'Hako Downloader',
     tocTitle: 'Muc luc',
+    lang: 'vi',
+    css: EPUB_CHAPTER_CSS,
+    numberChaptersInTOC: true,
     ignoreFailedDownloads: true
   };
 
@@ -1141,15 +1315,23 @@ async function downloadChapters(volume, volumeDir, author) {
       await delay(2000);
     }
 
-    const epubContent = contentHtml
+    const segments = contentHtml
       ? await embedImagesInHtml(contentHtml, chapter.url, tempDir)
-      : '';
+      : [];
 
-    epubChapters.push({
-      title: `${volume.title} - ${chapter.title}`,
-      author,
-      content: epubContent
-    });
+    if (segments.length > 0) {
+      pushEpubSegmentsFromChapter(epubChapters, segments, {
+        volumeTitle: volume.title,
+        chapterTitle: chapter.title,
+        author
+      });
+    } else if (contentHtml && hasMeaningfulHtml(contentHtml)) {
+      epubChapters.push({
+        title: `${volume.title} - ${chapter.title}`,
+        author,
+        content: buildTextChapterContent(contentHtml)
+      });
+    }
   }
 
   return { epubChapters, tempDir };
@@ -1425,9 +1607,16 @@ async function runDownloadFlow(novel, selectedVolumeIndexes, epubMode) {
   await fs.ensureDir(novelDir);
 
   const allEpubChapters = [];
-  const perVolumeChapters = {};
   const volumeDirs = [];
   const tempImageDirs = [];
+
+  const generatedEpubs = [];
+  const wantsPerVolumeEpub = epubMode === '2' || epubMode === '3';
+  const wantsCombinedEpub = epubMode === '1' || epubMode === '3';
+
+  if (epubMode !== '0') {
+    await cleanupLegacyEpubOutputs(novel, selectedVolumeIndexes, novelDir);
+  }
 
   for (const volumeIndex of selectedVolumeIndexes) {
     const volume = novel.volumes[volumeIndex];
@@ -1439,36 +1628,27 @@ async function runDownloadFlow(novel, selectedVolumeIndexes, epubMode) {
     console.log(`\n--- ${volume.title} ---`);
     const { epubChapters: chapters, tempDir } = await downloadChapters(volume, volumeDir, novel.author);
     allEpubChapters.push(...chapters);
-    perVolumeChapters[volumeIndex] = {
-      safeVolumeTitle,
-      chapters
-    };
     tempImageDirs.push(tempDir);
-  }
 
-  if (epubMode !== '0') {
-    await cleanupLegacyEpubOutputs(novel, selectedVolumeIndexes, novelDir);
-  }
-
-  if (epubMode === '1' || epubMode === '3') {
-    const epubPath = path.join(novelDir, `${safeTitle}.epub`);
-    await generateEpub(epubPath, novel.title, novel.author, novel.coverUrl, [...allEpubChapters]);
-  }
-
-  if (epubMode === '2' || epubMode === '3') {
-    for (const volumeIndex of selectedVolumeIndexes) {
-      const record = perVolumeChapters[volumeIndex];
-      if (!record || record.chapters.length === 0) continue;
-
-      const epubPath = path.join(novelDir, `${record.safeVolumeTitle}.epub`);
+    if (wantsPerVolumeEpub && chapters.length > 0) {
+      const epubPath = path.join(novelDir, `${safeVolumeTitle}.epub`);
+      console.log(`Dang dong goi EPUB: ${safeVolumeTitle}.epub`);
       await generateEpub(
         epubPath,
-        `${novel.title} - ${novel.volumes[volumeIndex].title}`,
+        `${novel.title} - ${volume.title}`,
         novel.author,
         novel.coverUrl,
-        [...record.chapters]
+        [...chapters]
       );
+      generatedEpubs.push(epubPath);
     }
+  }
+
+  if (wantsCombinedEpub && allEpubChapters.length > 0) {
+    const epubPath = path.join(novelDir, `${safeTitle}.epub`);
+    console.log(`Dang dong goi EPUB tong: ${safeTitle}.epub`);
+    await generateEpub(epubPath, novel.title, novel.author, novel.coverUrl, [...allEpubChapters]);
+    generatedEpubs.push(epubPath);
   }
 
   // Clean up temp image files after EPUB generation

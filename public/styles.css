@@ -241,6 +241,39 @@ h4 {
   justify-content: flex-end;
 }
 
+.image-dialog-context {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: rgba(255, 255, 255, 0.45);
+  line-height: 1.5;
+}
+
+.image-dialog-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 0.92rem;
+}
+
+.image-dialog-url-wrap {
+  margin: 0;
+  font-size: 0.92rem;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.image-import-preview {
+  margin-top: 8px;
+}
+
+.image-import-preview img {
+  display: block;
+  max-width: 100%;
+  max-height: 220px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--line);
+}
+
 .status-chip,
 .count-pill,
 .stat-pill,
@@ -770,6 +803,12 @@ button:disabled {
 .task-pill[data-state="running"] {
   color: var(--accent-strong);
   background: rgba(15, 109, 102, 0.12);
+}
+
+.task-pill[data-state="waiting_image"] {
+  color: #9a6700;
+  background: rgba(212, 155, 65, 0.16);
+  border-color: rgba(212, 155, 65, 0.22);
 }
 
 .task-pill[data-state="completed"] {

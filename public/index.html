@@ -20,7 +20,7 @@
         <div class="status-strip">
           <span id="siteStatus" class="status-chip">Site: ...</span>
           <span id="dnsStatus" class="status-chip">DNS: ...</span>
-          <button id="cookieStatusBtn" type="button" class="status-chip status-chip-button" title="Cấu hình cookie docln.net">
+          <button id="cookieStatusBtn" type="button" class="status-chip status-chip-button" title="Cấu hình cookie docln.sbs">
             Cookie: ...
           </button>
         </div>
@@ -188,10 +188,10 @@
     <form id="cookieDialogForm" method="dialog" class="cookie-dialog-panel">
       <div class="cookie-dialog-head">
         <div>
-          <p class="eyebrow">docln.net</p>
+          <p class="eyebrow">docln.sbs</p>
           <h2>Cấu Hình Cookie</h2>
           <p class="cookie-dialog-lead">
-            Trang docln.net yêu cầu cookie đăng nhập và Cloudflare. Dán cookie từ trình duyệt hoặc từ lệnh curl.
+            Trang docln.sbs yêu cầu cookie đăng nhập và Cloudflare. Dán cookie từ trình duyệt hoặc từ lệnh curl.
           </p>
         </div>
         <button type="button" id="closeCookieDialogBtn" class="ghost-button" aria-label="Đóng">Đóng</button>
@@ -200,9 +200,9 @@
       <section class="cookie-guide">
         <h3>Cách lấy cookie</h3>
         <ol>
-          <li>Mở <a href="https://docln.net/" target="_blank" rel="noreferrer">docln.net</a> và đăng nhập tài khoản.</li>
+          <li>Mở <a href="https://docln.sbs/" target="_blank" rel="noreferrer">docln.sbs</a> và đăng nhập tài khoản.</li>
           <li>Nhấn <strong>F12</strong> để mở DevTools, chọn tab <strong>Mạng / Network</strong>.</li>
-          <li>Tải lại trang (F5), bấm một request tới <code>docln.net</code>.</li>
+          <li>Tải lại trang (F5), bấm một request tới <code>docln.sbs</code>.</li>
           <li>Trong <strong>Headers</strong>, tìm dòng <code>Cookie:</code> và copy toàn bộ giá trị.</li>
           <li>Hoặc chuột phải request → <strong>Copy</strong> → <strong>Copy as cURL</strong>, rồi dán vào ô bên dưới.</li>
         </ol>
@@ -220,6 +220,36 @@
         <button type="button" id="testCookieBtn" class="ghost-button">Kiểm Tra</button>
         <button type="button" id="clearCookieBtn" class="ghost-button">Xóa Cookie</button>
         <button type="submit" id="saveCookieBtn">Lưu Cookie</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="imageDialog" class="cookie-dialog image-dialog">
+    <form id="imageDialogForm" class="cookie-dialog-panel">
+      <div class="cookie-dialog-head">
+        <div>
+          <p class="eyebrow">Ảnh lỗi</p>
+          <h2>Thay ảnh hoặc bỏ qua</h2>
+          <p class="cookie-dialog-lead">
+            Không tải được ảnh từ nguồn. Chọn file ảnh khác từ máy hoặc bỏ qua để tiếp tục tải truyện.
+          </p>
+        </div>
+      </div>
+
+      <div id="imageDialogContext" class="image-dialog-context"></div>
+      <p id="imageDialogError" class="image-dialog-error"></p>
+      <p class="image-dialog-url-wrap">
+        URL gốc: <a id="imageDialogUrl" href="#" target="_blank" rel="noreferrer"></a>
+      </p>
+
+      <label for="imageImportInput">Ảnh thay thế (từ máy)</label>
+      <input id="imageImportInput" type="file" accept="image/*">
+      <div id="imageImportPreview" class="image-import-preview hidden"></div>
+      <div id="imageDialogMeta" class="cookie-meta"></div>
+
+      <div class="cookie-dialog-actions">
+        <button type="button" id="imageSkipBtn" class="ghost-button">Bỏ qua ảnh này</button>
+        <button type="submit" id="imageReplaceBtn" disabled>Dùng ảnh đã chọn</button>
       </div>
     </form>
   </dialog>
