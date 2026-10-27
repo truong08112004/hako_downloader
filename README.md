@@ -10,6 +10,7 @@ Hako Downloader là công cụ local để tìm và tải Light Novel từ hệ 
 - Chọn tập cần tải
 - Xuất TXT và EPUB
 - Đổi DNS ngay trong ứng dụng
+- Cấu hình cookie DocLN (`cf_clearance`, `ln_session`) để vượt Cloudflare
 - Theo dõi tiến độ tải trên giao diện web
 - Có thể quay lại CLI bằng `npm run cli`
 
@@ -111,20 +112,51 @@ npm run cli
 
 1. Chạy `npm start`
 2. Mở `http://localhost:3000`
-3. Tìm truyện bằng từ khóa hoặc dán URL truyện trực tiếp
-4. Chọn truyện từ danh sách bên trái
-5. Chọn chế độ tải:
+3. Nếu dùng site DocLN (`docln.sbs`), cấu hình cookie trước (xem mục bên dưới)
+4. Tìm truyện bằng từ khóa hoặc dán URL truyện trực tiếp
+5. Chọn truyện từ danh sách bên trái
+6. Chọn chế độ tải:
    - `Chỉ tải TXT`
    - `1 EPUB tổng`
    - `EPUB từng tập`
    - `Cả hai`
-6. Chọn các tập muốn tải
-7. Bấm `Bắt Đầu Tải`
+7. Chọn các tập muốn tải
+8. Bấm `Bắt Đầu Tải`
 
 Sau khi tải xong:
 
 - TXT / HTML cache nằm trong `downloads/`
 - EPUB có thể tải trực tiếp từ giao diện web
+
+## Cấu hình cookie DocLN
+
+Site `docln.sbs` cần cookie đăng nhập và Cloudflare. Không có cookie hợp lệ thì app không tải được nội dung DocLN.
+
+### Cách lấy cookie
+
+1. Mở [https://docln.sbs](https://docln.sbs/) và đăng nhập tài khoản.
+2. Nhấn `F12` để mở DevTools, chọn tab **Mạng / Network**.
+3. Tải lại trang (`F5`), bấm một request tới `docln.sbs`.
+4. Trong **Headers**, tìm dòng `Cookie:` và copy toàn bộ giá trị.
+5. Hoặc chuột phải request → **Copy** → **Copy as cURL**.
+
+### Cách lưu vào app
+
+1. Trên giao diện web, bấm nút **Cookie** ở góc trên.
+2. Dán một dòng Cookie hoặc toàn bộ lệnh curl vào ô nhập.
+3. Bấm **Lưu Cookie**. App sẽ tự kiểm tra với `docln.sbs`.
+4. Có thể bấm **Kiểm Tra** để test lại, hoặc **Xóa Cookie** khi cookie hết hạn.
+
+App chỉ giữ 2 key bắt buộc:
+
+- `cf_clearance` — vượt Cloudflare
+- `ln_session` — phiên đăng nhập
+
+Các key khác (`XSRF-TOKEN`, `remember_web`, …) sẽ bị bỏ qua.
+
+Cookie được lưu local trong `.docln-cookies.json` (và file jar cho curl). Khi cookie hết hạn hoặc gặp lỗi 403 / Cloudflare, mở lại dialog Cookie và dán cookie mới.
+
+> CLI (`npm run cli`) hiện **không** hỗ trợ cookie DocLN. Muốn tải DocLN hãy dùng web UI.
 
 ## DNS tùy chỉnh
 
@@ -175,4 +207,5 @@ Giao diện web local của ứng dụng trên trình duyệt.
 
 - Đây là công cụ chạy local, không phải dịch vụ public
 - Tốc độ tải phụ thuộc vào site nguồn và giới hạn mạng
+- DocLN cần cookie hợp lệ; cookie hết hạn thì lấy lại từ trình duyệt
 - Nếu cấu trúc HTML của site thay đổi, app có thể cần cập nhật selector
