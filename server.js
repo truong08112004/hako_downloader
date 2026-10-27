@@ -3513,7 +3513,7 @@ server.on("error", (error) => {
       `[server] Có thể bạn đã chạy server nền từ lần trước — terminal trả prompt nhưng server vẫn chạy.`,
     );
     logError(`[server] Dừng server cũ: npm run stop`);
-    logError(`[server] Hoặc: kill $(lsof -t -i:${port})`);
+    logError(`[server] Hoặc: fuser -k ${port}/tcp`);
     logError(`[server] Sau đó chạy lại: npm start`);
     logError("");
     process.exit(1);
